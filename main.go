@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"strings"
 )
 
 type Response struct {
@@ -33,24 +34,59 @@ type Metric struct {
 	Name       string `json:"name"`
 	Namespace  string `json:"namespace"`
 	Pod        string `json:"pod"`
+	Phase      string `json:"phase"`
 }
 
-func main() {
-	jsonFile, err := os.Open("data/container_memory_working_set_bytes")
+func process(resourceMetric, resource string) {
+	metricsData, err := os.Open(fmt.Sprintf("data/%s", resourceMetric))
 	if err != nil {
 		fmt.Println(err)
 	}
-	defer jsonFile.Close()
+	defer metricsData.Close()
 
-	byteValue, _ := ioutil.ReadAll(jsonFile)
+	byteValue, _ := ioutil.ReadAll(metricsData)
 
 	var resp Response
 
 	json.Unmarshal(byteValue, &resp)
 
-	metricNames := []string{}
+	parsedLines := []string{}
 	for _, result := range resp.Data.Results {
-		metricNames = append(metricNames, result.Metric.Pod)
+		for _, value := range result.Values {
+			if len(value) != 2 {
+				continue
+			}
+			parsed := ""
+			if strings.Contains(resource, "bytes") {
+				if result.Metric.Container == "" {
+					continue
+				}
+				parsed = fmt.Sprintf("container-name:%s timestamp:%s %s:%s", result.Metric.Container, fmt.Sprintf("%d", int(value[0].(float64))), resource, value[1])
+			} else {
+				parsed = fmt.Sprintf("pod-name:%s timestamp:%s phase:%s %s:%s", result.Metric.Pod, fmt.Sprintf("%d", int(value[0].(float64))), result.Metric.Phase, resource, value[1])
+			}
+			parsedLines = append(parsedLines, parsed)
+		}
 	}
-	fmt.Println(metricNames)
+
+	err = os.MkdirAll("output", 0755)
+	if err != nil {
+		fmt.Println(err)
+	}
+	parsedData, err := os.Create(fmt.Sprintf("output/%s.txt", resourceMetric))
+	if err != nil {
+		fmt.Println(err)
+	}
+	defer parsedData.Close()
+
+	for _, parsedLine := range parsedLines {
+		parsedData.WriteString(parsedLine + "\n")
+	}
+	parsedData.Sync()
+}
+
+func main() {
+	process("container_memory_working_set_bytes", "memory-usage-bytes")
+	process("kube_pod_container_resource_limits", "memory-limit-bytes")
+	process("kube_pod_status_phase", "pod-status")
 }
